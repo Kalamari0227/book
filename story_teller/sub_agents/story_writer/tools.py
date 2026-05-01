@@ -18,8 +18,12 @@ Requirements:
 - Do not include scary, violent, or unsafe content.
 - Each page must have:
   - page_number: 1 through 5
-  - text: one or two short, warm Korean sentences suitable for young children
+  - text: exactly one short Korean sentence for a picture book caption
   - visual: detailed English image-generation description for the page
+- The page text must be warm, simple, and lyrical.
+- The page text must fit inside a small caption panel.
+- Keep each page text under 34 Korean characters when possible.
+- Do not use long clauses, parentheses, bullet points, or multiple sentences in page text.
 - Return JSON only.
 
 JSON shape:
@@ -40,6 +44,38 @@ JSON shape:
 """
 
 
+def compact_page_text(value: Any, max_chars: int = 34) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    # 줄바꿈/중복 공백 제거
+    text = " ".join(text.split())
+
+    # 여러 문장이 오면 첫 문장 중심으로 사용
+    sentence_endings = ["。", ".", "!", "?", "！", "？"]
+    first_cut = len(text)
+
+    for mark in sentence_endings:
+        index = text.find(mark)
+        if index != -1:
+            first_cut = min(first_cut, index + 1)
+
+    text = text[:first_cut].strip()
+
+    # 한국어 종결이 없으면 부드럽게 마무리
+    if text and text[-1] not in "요다죠네까.!?。！？":
+        text = text.rstrip(",，、") + "요."
+
+    # 너무 길면 자연스럽게 자르고 말줄임 대신 온점으로 마무리
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip(" ,，、")
+        if text and text[-1] not in ".!?。！？":
+            text += "."
+
+    return text
+
+
 def normalize_story_output(raw: Dict[str, Any], theme: str) -> Dict[str, Any]:
     pages = raw.get("pages", [])
     if not isinstance(pages, list):
@@ -56,7 +92,7 @@ def normalize_story_output(raw: Dict[str, Any], theme: str) -> Dict[str, Any]:
         normalized_pages.append(
             {
                 "page_number": int(page.get("page_number") or index),
-                "text": str(page.get("text", "")).strip(),
+                "text": compact_page_text(page.get("text", "")),
                 "visual": str(page.get("visual", "")).strip(),
                 "main_character": main_character,
                 "art_direction": art_direction,
@@ -68,7 +104,7 @@ def normalize_story_output(raw: Dict[str, Any], theme: str) -> Dict[str, Any]:
         normalized_pages.append(
             {
                 "page_number": page_number,
-                "text": f"{page_number}번째 장의 이야기가 이어졌어요.",
+                "text": compact_page_text("작은 이야기가 조용히 이어졌어요."),
                 "visual": "A warm children's book illustration scene.",
                 "main_character": main_character,
                 "art_direction": art_direction,
