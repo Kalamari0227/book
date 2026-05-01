@@ -15,7 +15,7 @@ def create_message_agent(name: str, message: str) -> Agent:
             "Return exactly this message and nothing else:\n\n"
             f"{message}"
         ),
-        model="openai/gpt-4o",
+        model="openai/gpt-4o-mini",
     )
 
 
@@ -42,9 +42,4 @@ illustration_done_message_agent = create_message_agent(
 book_start_message_agent = create_message_agent(
     "BookStartMessageAgent",
     "📚 그림과 글을 모아 동화책으로 엮고 있어요.",
-)
-
-book_done_message_agent = create_message_agent(
-    "BookDoneMessageAgent",
-    "🎉 동화책이 완성됐어요.",
 )

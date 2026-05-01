@@ -2,49 +2,42 @@ from google.adk.agents import Agent
 
 from ...callbacks import before_agent_callback, after_agent_callback
 from ...env import force_load_project_env
-from .tools import assemble_storybook, generate_page_image
+from .tools import assemble_storybook, generate_all_page_images
 
 
 force_load_project_env()
 
 
-def create_page_illustrator_agent(page_number: int) -> Agent:
-    return Agent(
-        name=f"Page{page_number}IllustratorAgent",
-        description=f"Generates the illustration artifact for page {page_number}.",
-        instruction=(
-            "You are a children's picture book illustrator.\n"
-            "Read story_writer_output from agent state.\n"
-            f"Generate only the illustration for page {page_number}.\n"
-            "You must call the generate_page_image tool.\n"
-            f"Pass page_number={page_number}."
-        ),
-        model="openai/gpt-4o",
-        tools=[generate_page_image],
-        before_agent_callback=before_agent_callback,
-        after_agent_callback=after_agent_callback,
-    )
-
-
-page_1_illustrator_agent = create_page_illustrator_agent(1)
-page_2_illustrator_agent = create_page_illustrator_agent(2)
-page_3_illustrator_agent = create_page_illustrator_agent(3)
-page_4_illustrator_agent = create_page_illustrator_agent(4)
-page_5_illustrator_agent = create_page_illustrator_agent(5)
+image_generator_agent = Agent(
+    name="ImageGeneratorAgent",
+    description="Generates all five storybook page illustrations.",
+    instruction=(
+        "You are a children's picture book illustrator.\n"
+        "Read story_writer_output from agent state.\n"
+        "You must call the generate_all_page_images tool exactly once.\n"
+        "Do not explain filenames.\n"
+        "Do not print prompts.\n"
+        "After the tool call, stop. Do not write a summary, filename, or final message."
+    ),
+    model="openai/gpt-4o",
+    tools=[generate_all_page_images],
+    before_agent_callback=before_agent_callback,
+    after_agent_callback=after_agent_callback,
+)
 
 
 book_assembler_agent = Agent(
     name="BookAssemblerAgent",
-    description="Combines story text and image artifacts into final storybook artifacts.",
+    description="Combines story text and image artifacts into a final storybook preview.",
     instruction=(
         "You are a storybook editor.\n"
         "Use story_writer_output and generated image artifacts to assemble the final storybook.\n"
-        "You must call the assemble_storybook tool.\n"
-        "After the tool returns, say only: 동화책 조립이 완료됐어요."
+        "You must call the assemble_storybook tool exactly once.\n"
+        "Do not explain filenames.\n"
+        "After the tool call, stop. Do not write a summary, filename, or final message."
     ),
     model="openai/gpt-4o",
     tools=[assemble_storybook],
-    output_key="assembler_output",
     before_agent_callback=before_agent_callback,
     after_agent_callback=after_agent_callback,
 )

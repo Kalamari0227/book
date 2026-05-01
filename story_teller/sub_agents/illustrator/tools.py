@@ -9,13 +9,13 @@ from openai import OpenAI
 
 from .utils import (
     build_artifact_filename,
-    build_composed_artifact_filename,
-    build_image_prompt,
     build_final_storybook_summary,
+    build_image_prompt,
     build_storybook_html,
     build_storybook_markdown,
     compose_full_storybook_preview_image,
     compose_storybook_page_image,
+    resize_storybook_image_bytes,
     story_output_to_dict,
 )
 
@@ -28,22 +28,7 @@ STORYBOOK_MARKDOWN_ARTIFACT = "storybook.md"
 STORYBOOK_HTML_ARTIFACT = "storybook.html"
 STORYBOOK_MANIFEST_ARTIFACT = "storybook_manifest.json"
 FULL_STORYBOOK_PREVIEW_ARTIFACT = "storybook_full_preview.jpeg"
-
-
-def build_tool_display(
-    title: str,
-    description: str,
-    state_name: str,
-    next_step: str = "",
-) -> Dict[str, str]:
-    display = {
-        "title": title,
-        "description": description,
-        "state": state_name,
-    }
-    if next_step:
-        display["next_step"] = next_step
-    return display
+SAVE_EXTRA_STORYBOOK_ARTIFACTS = os.getenv("STORYBOOK_SAVE_EXTRA_ARTIFACTS", "false").lower() == "true"
 
 
 async def save_text_artifact(
@@ -86,6 +71,19 @@ async def load_artifact_bytes(
     return artifact.inline_data.data
 
 
+def image_bytes_to_screen_part(
+    image_bytes: bytes,
+    scale: float = 0.5,
+) -> Dict[str, str]:
+    display_bytes = resize_storybook_image_bytes(image_bytes, scale=scale)
+    image_b64 = base64.b64encode(display_bytes).decode("ascii")
+    return {
+        "type": "image",
+        "mime_type": "image/jpeg",
+        "data": image_b64,
+    }
+
+
 async def load_image_data_uris(
     tool_context: ToolContext,
     pages: List[Dict[str, Any]],
@@ -107,58 +105,7 @@ async def load_image_data_uris(
     return image_data_uris
 
 
-async def compose_page_artifacts(
-    tool_context: ToolContext,
-    pages: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    composed_images = []
-
-    for page in pages:
-        page_number = int(page.get("page_number", len(composed_images) + 1))
-        source_filename = page.get("image_artifact") or build_artifact_filename(page_number)
-        composed_filename = build_composed_artifact_filename(page_number)
-        source_bytes = await load_artifact_bytes(tool_context, source_filename)
-
-        if not source_bytes:
-            continue
-
-        composed_bytes = compose_storybook_page_image(
-            image_bytes=source_bytes,
-            page_number=page_number,
-            text=page.get("text", ""),
-        )
-
-        await save_image_artifact(
-            tool_context=tool_context,
-            filename=composed_filename,
-            image_bytes=composed_bytes,
-        )
-
-        page["source_image_artifact"] = source_filename
-        page["composed_image_artifact"] = composed_filename
-
-        composed_images.append(
-            {
-                "page_number": page_number,
-                "filename": composed_filename,
-                "source_filename": source_filename,
-            }
-        )
-
-    return composed_images
-
-
-def get_parallel_image_results(tool_context: ToolContext) -> Dict[str, Dict[str, Any]]:
-    results = {}
-    for page_number in range(1, 6):
-        result = tool_context.state.get(f"page_image_result_{page_number}")
-        if isinstance(result, dict) and result.get("filename"):
-            results[str(page_number)] = result
-    return results
-
-
-async def generate_page_image(
-    page_number: int,
+async def generate_all_page_images(
     tool_context: ToolContext,
 ) -> Dict[str, Any]:
     client = OpenAI()
@@ -173,57 +120,63 @@ async def generate_page_image(
             "message": "삽화를 만들기 전에 5장 분량의 동화 글이 필요해요.",
         }
 
-    page = next(
-        (item for item in pages if int(item.get("page_number", 0)) == int(page_number)),
-        None,
-    )
-
-    if page is None:
-        return {
-            "status": "error",
-            "message": f"{page_number}번째 장을 찾을 수 없어요.",
-        }
-
-    filename = build_artifact_filename(page_number)
-    prompt = build_image_prompt(title, page)
-    prompt_filename = f"storybook_page_{page_number}_prompt.md"
-
-    page["prompt_artifact"] = prompt_filename
-
-    await save_text_artifact(
-        tool_context=tool_context,
-        filename=prompt_filename,
-        content="# 이미지 생성 프롬프트\n\n" + prompt.strip() + "\n",
-        mime_type="text/markdown",
-    )
-
     existing_artifacts = await tool_context.list_artifacts()
+    generated_images: List[Dict[str, Any]] = []
+    screen_parts: List[Dict[str, str]] = []
 
-    if filename not in existing_artifacts:
-        image = client.images.generate(
-            model=IMAGE_MODEL,
-            prompt=prompt,
-            n=1,
-            quality=IMAGE_QUALITY,
-            moderation="low",
-            output_format="jpeg",
-            background="opaque",
-            size=IMAGE_SIZE,
+    for page in pages:
+        page_number = int(page.get("page_number", len(generated_images) + 1))
+        filename = build_artifact_filename(page_number)
+        prompt = build_image_prompt(title, page)
+
+        if filename in existing_artifacts:
+            image_bytes = await load_artifact_bytes(tool_context, filename)
+        else:
+            image = client.images.generate(
+                model=IMAGE_MODEL,
+                prompt=prompt,
+                n=1,
+                quality=IMAGE_QUALITY,
+                moderation="low",
+                output_format="jpeg",
+                background="opaque",
+                size=IMAGE_SIZE,
+            )
+            image_bytes = base64.b64decode(image.data[0].b64_json)
+            await save_image_artifact(
+                tool_context=tool_context,
+                filename=filename,
+                image_bytes=image_bytes,
+            )
+
+        if image_bytes:
+            screen_parts.append(image_bytes_to_screen_part(image_bytes, scale=0.5))
+
+        page["image_artifact"] = filename
+
+        generated_images.append(
+            {
+                "page_number": page_number,
+                "filename": filename,
+                "visual": page.get("visual", ""),
+            }
         )
 
-        image_bytes = base64.b64decode(image.data[0].b64_json)
+    story_output["pages"] = pages
+    story_output["image_artifacts"] = generated_images
 
-        await save_image_artifact(
-            tool_context=tool_context,
-            filename=filename,
-            image_bytes=image_bytes,
-        )
+    tool_context.state["story_writer_output"] = story_output
+    tool_context.state["image_generation_screen_parts"] = screen_parts
+    tool_context.state["image_generation_output"] = {
+        "status": "complete",
+        "total_images": len(generated_images),
+        "generated_images": generated_images,
+    }
 
     return {
         "status": "complete",
-        "page_number": page_number,
-        "filename": filename,
-        "message": f"{page_number}번째 삽화가 완성됐어요.",
+        "message": "그림 5장이 모두 생성됐어요.",
+        "total_images": len(generated_images),
     }
 
 
@@ -240,11 +193,11 @@ async def assemble_storybook(
         }
 
     generated_images = []
+    full_preview_page_bytes: List[bytes] = []
 
     for page in pages:
         page_number = int(page.get("page_number", len(generated_images) + 1))
-        filename = build_artifact_filename(page_number)
-
+        filename = page.get("image_artifact") or build_artifact_filename(page_number)
         page["image_artifact"] = filename
 
         generated_images.append(
@@ -255,34 +208,18 @@ async def assemble_storybook(
             }
         )
 
+        raw_image_bytes = await load_artifact_bytes(tool_context, filename)
+        if raw_image_bytes:
+            page_preview_bytes = compose_storybook_page_image(
+                image_bytes=raw_image_bytes,
+                page_number=page_number,
+                text=page.get("text", ""),
+            )
+            full_preview_page_bytes.append(page_preview_bytes)
+
     story_output["pages"] = pages
     story_output["image_artifacts"] = generated_images
-
-    # 개별 "글 붙인 페이지 이미지" artifact는 만들지 않는다.
-    # 원본 이미지는 그대로 저장/표시하고,
-    # 글이 붙은 페이지는 최종 전체 미리보기 안에서만 임시로 합성한다.
-    composed_images = []
-    story_output["composed_image_artifacts"] = composed_images
-
-    full_preview_page_bytes = []
-
-    for page in pages:
-        page_number = int(page.get("page_number", len(full_preview_page_bytes) + 1))
-        raw_filename = page.get("image_artifact", "")
-
-        if not raw_filename:
-            continue
-
-        raw_image_bytes = await load_artifact_bytes(tool_context, raw_filename)
-        if not raw_image_bytes:
-            continue
-
-        page_preview_bytes = compose_storybook_page_image(
-            image_bytes=raw_image_bytes,
-            page_number=page_number,
-            text=page.get("text", ""),
-        )
-        full_preview_page_bytes.append(page_preview_bytes)
+    story_output["composed_image_artifacts"] = []
 
     if full_preview_page_bytes:
         full_preview_bytes = compose_full_storybook_preview_image(
@@ -309,58 +246,43 @@ async def assemble_storybook(
         "art_direction": story_output.get("art_direction"),
         "pages": pages,
         "image_artifacts": generated_images,
-        "composed_image_artifacts": composed_images,
+        "composed_image_artifacts": [],
         "storybook_artifact": STORYBOOK_MARKDOWN_ARTIFACT,
         "storybook_html_artifact": STORYBOOK_HTML_ARTIFACT,
         "manifest_artifact": STORYBOOK_MANIFEST_ARTIFACT,
         "full_preview_artifact": FULL_STORYBOOK_PREVIEW_ARTIFACT,
     }
 
-    await save_text_artifact(
-        tool_context=tool_context,
-        filename=STORYBOOK_MARKDOWN_ARTIFACT,
-        content=storybook_markdown,
-        mime_type="text/markdown",
-    )
-
-    await save_text_artifact(
-        tool_context=tool_context,
-        filename=STORYBOOK_HTML_ARTIFACT,
-        content=storybook_html,
-        mime_type="text/html",
-    )
-
-    await save_text_artifact(
-        tool_context=tool_context,
-        filename=STORYBOOK_MANIFEST_ARTIFACT,
-        content=json.dumps(storybook_manifest, ensure_ascii=False, indent=2),
-        mime_type="application/json",
-    )
-
-    full_preview_artifact = await tool_context.load_artifact(
-        filename=FULL_STORYBOOK_PREVIEW_ARTIFACT
-    )
-
-    screen_parts_payload = []
-
-    if full_preview_artifact and full_preview_artifact.inline_data:
-        full_preview_b64 = base64.b64encode(
-            full_preview_artifact.inline_data.data
-        ).decode("ascii")
-        screen_parts_payload.append(
-            {
-                "type": "image",
-                "mime_type": full_preview_artifact.inline_data.mime_type or "image/jpeg",
-                "data": full_preview_b64,
-            }
+    if SAVE_EXTRA_STORYBOOK_ARTIFACTS:
+        await save_text_artifact(
+            tool_context=tool_context,
+            filename=STORYBOOK_MARKDOWN_ARTIFACT,
+            content=storybook_markdown,
+            mime_type="text/markdown",
         )
-    else:
-        screen_parts_payload.append(
-            {
-                "type": "text",
-                "text": final_summary,
-            }
+
+        await save_text_artifact(
+            tool_context=tool_context,
+            filename=STORYBOOK_HTML_ARTIFACT,
+            content=storybook_html,
+            mime_type="text/html",
         )
+
+        await save_text_artifact(
+            tool_context=tool_context,
+            filename=STORYBOOK_MANIFEST_ARTIFACT,
+            content=json.dumps(storybook_manifest, ensure_ascii=False, indent=2),
+            mime_type="application/json",
+        )
+
+    full_preview_bytes = await load_artifact_bytes(
+        tool_context,
+        FULL_STORYBOOK_PREVIEW_ARTIFACT,
+    )
+
+    screen_parts: List[Dict[str, str]] = []
+    if full_preview_bytes:
+        screen_parts.append(image_bytes_to_screen_part(full_preview_bytes, scale=1))
 
     story_output["storybook_artifact"] = STORYBOOK_MARKDOWN_ARTIFACT
     story_output["storybook_html_artifact"] = STORYBOOK_HTML_ARTIFACT
@@ -370,12 +292,12 @@ async def assemble_storybook(
     tool_context.state["story_writer_output"] = story_output
     tool_context.state["storybook_html_for_screen"] = storybook_html
     tool_context.state["storybook_screen_output"] = final_summary
-    tool_context.state["storybook_screen_parts"] = screen_parts_payload
+    tool_context.state["storybook_screen_parts"] = screen_parts
     tool_context.state["illustrator_output"] = {
         "status": "complete",
         "total_images": len(generated_images),
         "generated_images": generated_images,
-        "composed_images": composed_images,
+        "composed_images": [],
         "storybook_artifact": STORYBOOK_MARKDOWN_ARTIFACT,
         "storybook_html_artifact": STORYBOOK_HTML_ARTIFACT,
         "manifest_artifact": STORYBOOK_MANIFEST_ARTIFACT,
@@ -385,9 +307,5 @@ async def assemble_storybook(
 
     return {
         "status": "complete",
-        "message": "동화책 조립이 완료됐어요.",
-        "storybook_artifact": STORYBOOK_MARKDOWN_ARTIFACT,
-        "storybook_html_artifact": STORYBOOK_HTML_ARTIFACT,
-        "manifest_artifact": STORYBOOK_MANIFEST_ARTIFACT,
         "full_preview_artifact": FULL_STORYBOOK_PREVIEW_ARTIFACT,
     }

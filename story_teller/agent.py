@@ -1,9 +1,7 @@
-from google.adk.agents import ParallelAgent, SequentialAgent
+from google.adk.agents import SequentialAgent
 
-from .callbacks import before_agent_callback, after_agent_callback
 from .env import force_load_project_env
 from .progress_agents import (
-    book_done_message_agent,
     book_start_message_agent,
     illustration_done_message_agent,
     illustration_start_message_agent,
@@ -16,46 +14,26 @@ force_load_project_env()
 
 from .sub_agents.illustrator.agent import (
     book_assembler_agent,
-    page_1_illustrator_agent,
-    page_2_illustrator_agent,
-    page_3_illustrator_agent,
-    page_4_illustrator_agent,
-    page_5_illustrator_agent,
+    image_generator_agent,
 )
 from .sub_agents.story_writer.agent import story_writer_agent
-
-
-parallel_illustrator_agent = ParallelAgent(
-    name="ParallelIllustratorAgent",
-    description="Generates five page illustrations in parallel.",
-    sub_agents=[
-        page_1_illustrator_agent,
-        page_2_illustrator_agent,
-        page_3_illustrator_agent,
-        page_4_illustrator_agent,
-        page_5_illustrator_agent,
-    ],
-    before_agent_callback=before_agent_callback,
-    after_agent_callback=after_agent_callback,
-)
 
 
 root_agent = SequentialAgent(
     name="StoryBookCreator",
     description=(
         "Creates a five-page children's storybook from a theme. "
-        "The workflow writes the story first, generates five illustrations in parallel, "
-        "then assembles the final storybook artifacts."
+        "The workflow writes the story, generates all illustrations, "
+        "then assembles the final storybook preview."
     ),
     sub_agents=[
         story_start_message_agent,
         story_writer_agent,
         story_done_message_agent,
         illustration_start_message_agent,
-        parallel_illustrator_agent,
+        image_generator_agent,
         illustration_done_message_agent,
         book_start_message_agent,
         book_assembler_agent,
-        book_done_message_agent,
     ],
 )
