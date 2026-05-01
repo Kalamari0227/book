@@ -16,9 +16,9 @@ story_writer_agent = Agent(
         "Call the write_storybook_plan tool exactly once using the user's theme.\n"
         "The tool stores story_writer_output in state for the next agents.\n"
         "Do not print JSON.\n"
-        "After the tool call, say only: 동화 기획 데이터가 준비됐어요."
+        "After the tool call, stop. Do not write a user-facing message."
     ),
-    model="openai/gpt-4o",
+    model="openai/gpt-4o-mini",
     tools=[write_storybook_plan],
     before_agent_callback=before_agent_callback,
     after_agent_callback=after_agent_callback,

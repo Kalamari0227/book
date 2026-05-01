@@ -18,7 +18,7 @@ def create_page_image_agent(page_number: int) -> Agent:
             f"Pass page_number={page_number}.\n"
             "Do not explain the result.\n"
             "Do not mention filenames.\n"
-            "After the tool call, stop."
+            "After the tool call, say only: ✓"
         ),
         model="openai/gpt-4o-mini",
         tools=[generate_page_image],
@@ -42,7 +42,7 @@ book_assembler_agent = Agent(
         "Call the assemble_storybook tool exactly once.\n"
         "Do not explain the result.\n"
         "Do not mention filenames.\n"
-        "After the tool call, stop."
+        "After the tool call, say only: ✓"
     ),
     model="openai/gpt-4o-mini",
     tools=[assemble_storybook],

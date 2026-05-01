@@ -120,7 +120,6 @@ async def write_storybook_plan(
 
     return {
         "status": "complete",
-        "message": "동화 기획 데이터가 준비됐어요.",
         "title": story_output.get("title", ""),
         "total_pages": len(story_output.get("pages", [])),
     }

@@ -2,7 +2,7 @@ from io import BytesIO
 import os
 from typing import Any, Dict, List
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageStat, ImageStat, ImageStat
 
 
 def story_output_to_dict(story_output: Any) -> Dict[str, Any]:
@@ -113,39 +113,111 @@ def compose_storybook_page_image(
 ) -> bytes:
     image = Image.open(BytesIO(image_bytes)).convert("RGB")
     width, height = image.size
-    margin_height = max(int(height * 0.28), 280)
-    canvas = Image.new("RGB", (width, height + margin_height), "#fbf7ef")
-    canvas.paste(image, (0, 0))
 
+    # 그림 위에 직접 본문을 얹어 동화책 페이지처럼 보이게 한다.
+    canvas = image.copy().convert("RGBA")
+
+    # 그림 하단 색을 샘플링해 패널 색을 이미지 분위기에 맞춘다.
+    sample_height = max(int(height * 0.14), 24)
+    bottom_strip = image.crop((0, height - sample_height, width, height))
+    avg = ImageStat.Stat(bottom_strip).mean
+    sampled_color = tuple(int(v) for v in avg[:3])
+
+    paper_color = (250, 242, 225)
+    ink_color = "#2d2926"
+
+    def blend(c1, c2, ratio: float):
+        return tuple(int(c1[i] * (1 - ratio) + c2[i] * ratio) for i in range(3))
+
+    panel_base = blend(sampled_color, paper_color, 0.72)
+
+    # 본문만 들어가므로 패널 높이를 낮춘다.
+    panel_width = int(width * 0.86)
+    panel_height = max(int(height * 0.16), int(width * 0.27), 74)
+
+    panel_x = (width - panel_width) // 2
+    panel_y = height - panel_height - max(int(height * 0.045), 14)
+    radius = max(int(width * 0.035), 10)
+
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+
+    # 은은한 그림자
+    shadow_offset = max(int(width * 0.012), 3)
+    overlay_draw.rounded_rectangle(
+        (
+            panel_x + shadow_offset,
+            panel_y + shadow_offset,
+            panel_x + panel_width + shadow_offset,
+            panel_y + panel_height + shadow_offset,
+        ),
+        radius=radius,
+        fill=(70, 52, 36, 36),
+    )
+
+    # 따뜻한 반투명 종이 패널
+    overlay_draw.rounded_rectangle(
+        (panel_x, panel_y, panel_x + panel_width, panel_y + panel_height),
+        radius=radius,
+        fill=(*panel_base, 220),
+        outline=(255, 250, 238, 145),
+        width=max(int(width * 0.004), 1),
+    )
+
+    # 상단 하이라이트
+    overlay_draw.line(
+        (
+            panel_x + radius,
+            panel_y + max(int(panel_height * 0.18), 10),
+            panel_x + panel_width - radius,
+            panel_y + max(int(panel_height * 0.18), 10),
+        ),
+        fill=(255, 255, 255, 62),
+        width=max(int(width * 0.004), 1),
+    )
+
+    canvas = Image.alpha_composite(canvas, overlay).convert("RGB")
     draw = ImageDraw.Draw(canvas)
-    padding_x = max(int(width * 0.075), 48)
-    padding_top = max(int(margin_height * 0.16), 36)
-    title_font = load_storybook_font(max(int(width * 0.034), 28))
-    body_font_size = max(int(width * 0.043), 34)
+
+    padding_x = max(int(panel_width * 0.08), 16)
+    padding_y = max(int(panel_height * 0.18), 12)
+
+    body_font_size = max(int(width * 0.050), 14)
     body_font = load_storybook_font(body_font_size)
-    title_color = "#8a7258"
-    text_color = "#2d2926"
 
-    y = height + padding_top
-    draw.text((padding_x, y), f"{page_number}번째 장", fill=title_color, font=title_font)
-    title_bbox = draw.textbbox((padding_x, y), f"{page_number}번째 장", font=title_font)
-    y = title_bbox[3] + max(int(margin_height * 0.08), 22)
+    text_x = panel_x + padding_x
+    text_y = panel_y + padding_y
 
-    max_text_width = width - (padding_x * 2)
-    line_spacing = max(int(body_font_size * 0.45), 14)
-    available_height = height + margin_height - y - padding_top
+    max_text_width = panel_width - padding_x * 2
+    line_spacing = max(int(body_font_size * 0.30), 4)
 
     lines = wrap_story_text(draw, text, body_font, max_text_width)
-    while len(lines) * (body_font_size + line_spacing) > available_height and body_font_size > 24:
-        body_font_size -= 2
+
+    def calculate_body_height() -> int:
+        total = 0
+        for line in lines:
+            bbox = draw.textbbox((0, 0), line, font=body_font)
+            total += bbox[3] - bbox[1]
+        total += line_spacing * max(len(lines) - 1, 0)
+        return total
+
+    available_height = panel_height - padding_y * 2
+
+    while calculate_body_height() > available_height and body_font_size > 10:
+        body_font_size -= 1
         body_font = load_storybook_font(body_font_size)
-        line_spacing = max(int(body_font_size * 0.45), 12)
+        line_spacing = max(int(body_font_size * 0.28), 3)
         lines = wrap_story_text(draw, text, body_font, max_text_width)
 
+    # 본문을 패널 중앙에 가깝게 배치
+    body_height = calculate_body_height()
+    text_y = panel_y + max(int((panel_height - body_height) / 2), padding_y)
+
     for line in lines:
-        draw.text((padding_x, y), line, fill=text_color, font=body_font)
-        line_bbox = draw.textbbox((padding_x, y), line, font=body_font)
-        y = line_bbox[3] + line_spacing
+        draw.text((text_x, text_y), line, fill=ink_color, font=body_font)
+        bbox = draw.textbbox((text_x, text_y), line, font=body_font)
+        line_height = bbox[3] - bbox[1]
+        text_y += line_height + line_spacing
 
     output = BytesIO()
     canvas.save(output, format="JPEG", quality=92, optimize=True)
@@ -282,7 +354,6 @@ def build_storybook_markdown(story_output: Dict[str, Any]) -> str:
 
         lines.extend(
             [
-                f"## {page_number}번째 장",
                 "",
                 f"글: {text}",
                 "",
@@ -418,7 +489,6 @@ def build_storybook_html(
         page_sections.append(
             f"""
             <section class="book-page">
-              <div class="page-number">{page_number}번째 장</div>
               <div class="illustration">{image_html}</div>
               <p class="story-text">{text}</p>
             </section>
@@ -542,44 +612,69 @@ def compose_full_storybook_preview_image(
     theme = story_output.get("theme", "")
     story_summary = story_output.get("story_summary", "")
 
-    title_font = load_storybook_font(58)
-    subtitle_font = load_storybook_font(30)
-    body_font = load_storybook_font(28)
+    padding = max(int(target_width * 0.08), 20)
+    gap = max(int(target_width * 0.07), 18)
 
-    cover_height = 900
-    padding = 72
-    gap = 42
+    title_font_size = max(int(target_width * 0.085), 20)
+    subtitle_font_size = max(int(target_width * 0.050), 14)
+    body_font_size = max(int(target_width * 0.046), 13)
+
+    title_font = load_storybook_font(title_font_size)
+    subtitle_font = load_storybook_font(subtitle_font_size)
+    body_font = load_storybook_font(body_font_size)
+
+    dummy = Image.new("RGB", (target_width, 1), "#fbf7ef")
+    draw = ImageDraw.Draw(dummy)
+
+    max_text_width = target_width - padding * 2
+
+    title_lines = wrap_story_text(draw, title, title_font, max_text_width)
+    theme_lines = wrap_story_text(draw, f"주제: {theme}", body_font, max_text_width) if theme else []
+    summary_lines = wrap_story_text(draw, story_summary, body_font, max_text_width) if story_summary else []
+
+    subtitle_bbox = draw.textbbox((0, 0), "완성된 동화책", font=subtitle_font)
+    subtitle_height = subtitle_bbox[3] - subtitle_bbox[1]
+
+    title_line_height = title_font_size + max(int(title_font_size * 0.22), 5)
+    body_line_height = body_font_size + max(int(body_font_size * 0.35), 5)
+
+    cover_height = (
+        padding
+        + subtitle_height
+        + max(int(target_width * 0.09), 24)
+        + len(title_lines) * title_line_height
+        + max(int(target_width * 0.08), 20)
+        + len(theme_lines) * body_line_height
+        + max(int(target_width * 0.05), 12)
+        + len(summary_lines) * body_line_height
+        + padding
+    )
+
+    cover_height = max(int(target_width * 1.35), cover_height)
 
     cover = Image.new("RGB", (target_width, cover_height), "#fbf7ef")
     draw = ImageDraw.Draw(cover)
 
-    y = 140
-    draw.text((padding, y), "완성된 동화책", fill="#8a7258", font=subtitle_font)
-    y += 72
+    y = padding
 
-    title_lines = wrap_story_text(draw, title, title_font, target_width - padding * 2)
+    draw.text((padding, y), "완성된 동화책", fill="#8a7258", font=subtitle_font)
+    y += subtitle_height + max(int(target_width * 0.09), 24)
+
     for line in title_lines:
         draw.text((padding, y), line, fill="#2d2926", font=title_font)
-        bbox = draw.textbbox((padding, y), line, font=title_font)
-        y = bbox[3] + 20
+        y += title_line_height
 
-    if theme:
-        y += 40
-        draw.text((padding, y), f"주제: {theme}", fill="#5f554d", font=body_font)
-        y += 48
+    if theme_lines:
+        y += max(int(target_width * 0.06), 14)
+        for line in theme_lines:
+            draw.text((padding, y), line, fill="#5f554d", font=body_font)
+            y += body_line_height
 
-    if story_summary:
-        y += 20
-        summary_lines = wrap_story_text(
-            draw,
-            story_summary,
-            body_font,
-            target_width - padding * 2,
-        )
+    if summary_lines:
+        y += max(int(target_width * 0.04), 10)
         for line in summary_lines:
             draw.text((padding, y), line, fill="#5f554d", font=body_font)
-            bbox = draw.textbbox((padding, y), line, font=body_font)
-            y = bbox[3] + 14
+            y += body_line_height
 
     resized_pages: List[Image.Image] = [cover]
 
@@ -588,6 +683,7 @@ def compose_full_storybook_preview_image(
         width, height = page_image.size
         ratio = target_width / width
         resized_height = max(int(height * ratio), 1)
+
         page_image = page_image.resize(
             (target_width, resized_height),
             Image.Resampling.LANCZOS,
@@ -606,76 +702,21 @@ def compose_full_storybook_preview_image(
     canvas.save(output, format="JPEG", quality=90, optimize=True)
     return output.getvalue()
 
+def resize_storybook_image_to_width(image_bytes: bytes, target_width: int) -> bytes:
+    image = Image.open(BytesIO(image_bytes)).convert("RGB")
+    width, height = image.size
 
-def compose_full_storybook_preview_image(
-    story_output: Dict[str, Any],
-    page_images: List[bytes],
-    target_width: int = 900,
-) -> bytes:
-    title = story_output.get("title", "완성된 동화책")
-    theme = story_output.get("theme", "")
-    story_summary = story_output.get("story_summary", "")
+    if target_width <= 0 or width == target_width:
+        return image_bytes
 
-    title_font = load_storybook_font(58)
-    subtitle_font = load_storybook_font(30)
-    body_font = load_storybook_font(28)
+    ratio = target_width / width
+    resized_height = max(int(height * ratio), 1)
 
-    cover_height = 900
-    padding = 72
-    gap = 42
-
-    cover = Image.new("RGB", (target_width, cover_height), "#fbf7ef")
-    draw = ImageDraw.Draw(cover)
-
-    y = 140
-    draw.text((padding, y), "완성된 동화책", fill="#8a7258", font=subtitle_font)
-    y += 72
-
-    title_lines = wrap_story_text(draw, title, title_font, target_width - padding * 2)
-    for line in title_lines:
-        draw.text((padding, y), line, fill="#2d2926", font=title_font)
-        bbox = draw.textbbox((padding, y), line, font=title_font)
-        y = bbox[3] + 20
-
-    if theme:
-        y += 40
-        draw.text((padding, y), f"주제: {theme}", fill="#5f554d", font=body_font)
-        y += 48
-
-    if story_summary:
-        y += 20
-        summary_lines = wrap_story_text(
-            draw,
-            story_summary,
-            body_font,
-            target_width - padding * 2,
-        )
-        for line in summary_lines:
-            draw.text((padding, y), line, fill="#5f554d", font=body_font)
-            bbox = draw.textbbox((padding, y), line, font=body_font)
-            y = bbox[3] + 14
-
-    resized_pages: List[Image.Image] = [cover]
-
-    for image_bytes in page_images:
-        page_image = Image.open(BytesIO(image_bytes)).convert("RGB")
-        width, height = page_image.size
-        ratio = target_width / width
-        resized_height = max(int(height * ratio), 1)
-        page_image = page_image.resize(
-            (target_width, resized_height),
-            Image.Resampling.LANCZOS,
-        )
-        resized_pages.append(page_image)
-
-    total_height = sum(image.height for image in resized_pages) + gap * (len(resized_pages) - 1)
-    canvas = Image.new("RGB", (target_width, total_height), "#f7f1e8")
-
-    y = 0
-    for image in resized_pages:
-        canvas.paste(image, (0, y))
-        y += image.height + gap
+    resized = image.resize(
+        (target_width, resized_height),
+        Image.Resampling.LANCZOS,
+    )
 
     output = BytesIO()
-    canvas.save(output, format="JPEG", quality=90, optimize=True)
+    resized.save(output, format="JPEG", quality=90, optimize=True)
     return output.getvalue()

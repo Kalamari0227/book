@@ -16,6 +16,7 @@ from .utils import (
     compose_full_storybook_preview_image,
     compose_storybook_page_image,
     resize_storybook_image_bytes,
+    resize_storybook_image_to_width,
     story_output_to_dict,
 )
 
@@ -224,11 +225,17 @@ async def generate_page_image(
         )
         image_bytes = base64.b64decode(image.data[0].b64_json)
 
+        display_image_bytes = resize_storybook_image_to_width(
+            image_bytes,
+            target_width=300,
+        )
+
         await save_image_artifact(
             tool_context=tool_context,
             filename=filename,
-            image_bytes=image_bytes,
+            image_bytes=display_image_bytes,
         )
+        image_bytes = display_image_bytes
 
     page["image_artifact"] = filename
     story_output["pages"] = pages
@@ -286,7 +293,7 @@ async def assemble_storybook(
         full_preview_bytes = compose_full_storybook_preview_image(
             story_output=story_output,
             page_images=full_preview_page_bytes,
-            target_width=450,
+            target_width=300,
         )
         await save_image_artifact(
             tool_context=tool_context,
