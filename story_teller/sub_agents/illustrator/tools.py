@@ -122,7 +122,6 @@ async def generate_all_page_images(
 
     existing_artifacts = await tool_context.list_artifacts()
     generated_images: List[Dict[str, Any]] = []
-    screen_parts: List[Dict[str, str]] = []
 
     for page in pages:
         page_number = int(page.get("page_number", len(generated_images) + 1))
@@ -149,8 +148,8 @@ async def generate_all_page_images(
                 image_bytes=image_bytes,
             )
 
-        if image_bytes:
-            screen_parts.append(image_bytes_to_screen_part(image_bytes, scale=0.5))
+        # The saved artifact event shows each generated image in ADK Dev UI.
+        # Do not collect images for callback output to avoid duplicate display.
 
         page["image_artifact"] = filename
 
@@ -166,7 +165,6 @@ async def generate_all_page_images(
     story_output["image_artifacts"] = generated_images
 
     tool_context.state["story_writer_output"] = story_output
-    tool_context.state["image_generation_screen_parts"] = screen_parts
     tool_context.state["image_generation_output"] = {
         "status": "complete",
         "total_images": len(generated_images),
@@ -175,8 +173,71 @@ async def generate_all_page_images(
 
     return {
         "status": "complete",
-        "message": "그림 5장이 모두 생성됐어요.",
         "total_images": len(generated_images),
+    }
+
+
+async def generate_page_image(
+    page_number: int,
+    tool_context: ToolContext,
+) -> Dict[str, Any]:
+    client = OpenAI()
+
+    story_output = story_output_to_dict(tool_context.state.get("story_writer_output"))
+    pages: List[Dict[str, Any]] = story_output.get("pages", [])
+    title = story_output.get("title", "Children's Storybook")
+
+    if len(pages) != 5:
+        return {
+            "status": "error",
+            "message": "삽화를 만들기 전에 5장 분량의 동화 글이 필요해요.",
+        }
+
+    page = next(
+        (item for item in pages if int(item.get("page_number", 0)) == int(page_number)),
+        None,
+    )
+
+    if page is None:
+        return {
+            "status": "error",
+            "message": f"{page_number}번째 장을 찾을 수 없어요.",
+        }
+
+    filename = build_artifact_filename(page_number)
+    prompt = build_image_prompt(title, page)
+
+    existing_artifacts = await tool_context.list_artifacts()
+
+    if filename in existing_artifacts:
+        image_bytes = await load_artifact_bytes(tool_context, filename)
+    else:
+        image = client.images.generate(
+            model=IMAGE_MODEL,
+            prompt=prompt,
+            n=1,
+            quality=IMAGE_QUALITY,
+            moderation="low",
+            output_format="jpeg",
+            background="opaque",
+            size=IMAGE_SIZE,
+        )
+        image_bytes = base64.b64decode(image.data[0].b64_json)
+
+        await save_image_artifact(
+            tool_context=tool_context,
+            filename=filename,
+            image_bytes=image_bytes,
+        )
+
+    page["image_artifact"] = filename
+    story_output["pages"] = pages
+    tool_context.state["story_writer_output"] = story_output
+
+    return {
+        "status": "complete",
+        "page_number": page_number,
+        "filename": filename,
     }
 
 
@@ -280,7 +341,10 @@ async def assemble_storybook(
         FULL_STORYBOOK_PREVIEW_ARTIFACT,
     )
 
+    # 마지막 동화책 미리보기 전용 screen_parts.
+    # 원본 그림 생성 단계의 screen_parts와는 별개다.
     screen_parts: List[Dict[str, str]] = []
+
     if full_preview_bytes:
         screen_parts.append(image_bytes_to_screen_part(full_preview_bytes, scale=1))
 
