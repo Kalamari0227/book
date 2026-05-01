@@ -2,7 +2,7 @@ from io import BytesIO
 import os
 from typing import Any, Dict, List
 
-from PIL import Image, ImageDraw, ImageFont, ImageStat, ImageStat, ImageStat
+from PIL import Image, ImageDraw, ImageFont, ImageStat, ImageStat, ImageStat, ImageStat
 
 
 def story_output_to_dict(story_output: Any) -> Dict[str, Any]:
@@ -114,11 +114,10 @@ def compose_storybook_page_image(
     image = Image.open(BytesIO(image_bytes)).convert("RGB")
     width, height = image.size
 
-    # 그림 위에 직접 본문을 얹어 동화책 페이지처럼 보이게 한다.
     canvas = image.copy().convert("RGBA")
 
-    # 그림 하단 색을 샘플링해 패널 색을 이미지 분위기에 맞춘다.
-    sample_height = max(int(height * 0.14), 24)
+    # 이미지 하단 색감을 가져와 패널 색과 자연스럽게 섞는다.
+    sample_height = max(int(height * 0.12), 24)
     bottom_strip = image.crop((0, height - sample_height, width, height))
     avg = ImageStat.Stat(bottom_strip).mean
     sampled_color = tuple(int(v) for v in avg[:3])
@@ -129,21 +128,20 @@ def compose_storybook_page_image(
     def blend(c1, c2, ratio: float):
         return tuple(int(c1[i] * (1 - ratio) + c2[i] * ratio) for i in range(3))
 
-    panel_base = blend(sampled_color, paper_color, 0.72)
+    panel_base = blend(sampled_color, paper_color, 0.74)
 
-    # 본문만 들어가므로 패널 높이를 낮춘다.
-    panel_width = int(width * 0.86)
-    panel_height = max(int(height * 0.16), int(width * 0.27), 74)
+    # 패널을 더 작게: 최종 300px 미리보기 기준 캡션 느낌.
+    panel_width = int(width * 0.82)
+    panel_height = max(int(height * 0.125), int(width * 0.22), 58)
 
     panel_x = (width - panel_width) // 2
-    panel_y = height - panel_height - max(int(height * 0.045), 14)
-    radius = max(int(width * 0.035), 10)
+    panel_y = height - panel_height - max(int(height * 0.050), 14)
+    radius = max(int(width * 0.030), 8)
 
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     overlay_draw = ImageDraw.Draw(overlay)
 
-    # 은은한 그림자
-    shadow_offset = max(int(width * 0.012), 3)
+    shadow_offset = max(int(width * 0.010), 2)
     overlay_draw.rounded_rectangle(
         (
             panel_x + shadow_offset,
@@ -152,48 +150,32 @@ def compose_storybook_page_image(
             panel_y + panel_height + shadow_offset,
         ),
         radius=radius,
-        fill=(70, 52, 36, 36),
+        fill=(58, 44, 32, 26),
     )
 
-    # 따뜻한 반투명 종이 패널
     overlay_draw.rounded_rectangle(
         (panel_x, panel_y, panel_x + panel_width, panel_y + panel_height),
         radius=radius,
-        fill=(*panel_base, 220),
-        outline=(255, 250, 238, 145),
-        width=max(int(width * 0.004), 1),
-    )
-
-    # 상단 하이라이트
-    overlay_draw.line(
-        (
-            panel_x + radius,
-            panel_y + max(int(panel_height * 0.18), 10),
-            panel_x + panel_width - radius,
-            panel_y + max(int(panel_height * 0.18), 10),
-        ),
-        fill=(255, 255, 255, 62),
-        width=max(int(width * 0.004), 1),
+        fill=(*panel_base, 205),
+        outline=(255, 250, 238, 120),
+        width=max(int(width * 0.003), 1),
     )
 
     canvas = Image.alpha_composite(canvas, overlay).convert("RGB")
     draw = ImageDraw.Draw(canvas)
 
-    padding_x = max(int(panel_width * 0.08), 16)
-    padding_y = max(int(panel_height * 0.18), 12)
+    padding_x = max(int(panel_width * 0.075), 14)
+    padding_y = max(int(panel_height * 0.16), 9)
 
-    body_font_size = max(int(width * 0.050), 14)
+    body_font_size = max(int(width * 0.045), 13)
     body_font = load_storybook_font(body_font_size)
 
-    text_x = panel_x + padding_x
-    text_y = panel_y + padding_y
-
     max_text_width = panel_width - padding_x * 2
-    line_spacing = max(int(body_font_size * 0.30), 4)
+    line_spacing = max(int(body_font_size * 0.26), 3)
 
     lines = wrap_story_text(draw, text, body_font, max_text_width)
 
-    def calculate_body_height() -> int:
+    def body_height() -> int:
         total = 0
         for line in lines:
             bbox = draw.textbbox((0, 0), line, font=body_font)
@@ -203,21 +185,19 @@ def compose_storybook_page_image(
 
     available_height = panel_height - padding_y * 2
 
-    while calculate_body_height() > available_height and body_font_size > 10:
+    while body_height() > available_height and body_font_size > 9:
         body_font_size -= 1
         body_font = load_storybook_font(body_font_size)
-        line_spacing = max(int(body_font_size * 0.28), 3)
+        line_spacing = max(int(body_font_size * 0.24), 3)
         lines = wrap_story_text(draw, text, body_font, max_text_width)
 
-    # 본문을 패널 중앙에 가깝게 배치
-    body_height = calculate_body_height()
-    text_y = panel_y + max(int((panel_height - body_height) / 2), padding_y)
+    text_x = panel_x + padding_x
+    text_y = panel_y + max(int((panel_height - body_height()) / 2), padding_y)
 
     for line in lines:
         draw.text((text_x, text_y), line, fill=ink_color, font=body_font)
         bbox = draw.textbbox((text_x, text_y), line, font=body_font)
-        line_height = bbox[3] - bbox[1]
-        text_y += line_height + line_spacing
+        text_y += (bbox[3] - bbox[1]) + line_spacing
 
     output = BytesIO()
     canvas.save(output, format="JPEG", quality=92, optimize=True)
