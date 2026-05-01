@@ -5,7 +5,6 @@ from .progress_agents import (
     book_start_message_agent,
     illustration_done_message_agent,
     illustration_start_message_agent,
-    story_done_message_agent,
     story_start_message_agent,
 )
 
@@ -33,8 +32,7 @@ root_agent = SequentialAgent(
     sub_agents=[
         story_start_message_agent,
         story_writer_agent,
-        story_done_message_agent,
-        illustration_start_message_agent,
+            illustration_start_message_agent,
         page_1_image_agent,
         page_2_image_agent,
         page_3_image_agent,

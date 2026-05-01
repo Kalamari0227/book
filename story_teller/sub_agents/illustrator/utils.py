@@ -2,7 +2,7 @@ from io import BytesIO
 import os
 from typing import Any, Dict, List
 
-from PIL import Image, ImageDraw, ImageFont, ImageStat, ImageStat, ImageStat, ImageStat
+from PIL import Image, ImageDraw, ImageFont, ImageStat
 
 
 def story_output_to_dict(story_output: Any) -> Dict[str, Any]:
@@ -105,6 +105,53 @@ def wrap_story_text(
 
     return lines or [text]
 
+def strip_thumbnail_card_frame(image: Image.Image) -> Image.Image:
+    """
+    Generated page images are displayed as thumbnail cards during progress.
+    For the final storybook, remove the warm outer card frame so the caption
+    is composed directly on the illustration.
+    """
+    image = image.convert("RGB")
+    width, height = image.size
+
+    # Only small progress thumbnails should be cropped.
+    # Raw generated images are much larger and should pass through unchanged.
+    if width > 420:
+        return image
+
+    if width < 180 or height < 180:
+        return image
+
+    # Thumbnail card background is warm beige. If corners are not close to that,
+    # assume this is not a thumbnail card.
+    expected = (247, 241, 232)
+    corner_points = [
+        (2, 2),
+        (max(width - 3, 0), 2),
+        (2, max(height - 3, 0)),
+        (max(width - 3, 0), max(height - 3, 0)),
+    ]
+
+    def color_distance(c1, c2):
+        return sum(abs(int(c1[i]) - int(c2[i])) for i in range(3))
+
+    corner_colors = [image.getpixel(point) for point in corner_points]
+    avg_distance = sum(color_distance(color, expected) for color in corner_colors) / len(corner_colors)
+
+    if avg_distance > 55:
+        return image
+
+    padding = max(int(width * 0.06), 14)
+    shadow_offset = max(int(width * 0.012), 3)
+
+    left = padding
+    top = padding
+    right = max(width - padding - shadow_offset, left + 1)
+    bottom = max(height - padding - shadow_offset, top + 1)
+
+    cropped = image.crop((left, top, right, bottom))
+    return cropped
+
 
 def compose_storybook_page_image(
     image_bytes: bytes,
@@ -112,6 +159,7 @@ def compose_storybook_page_image(
     text: str,
 ) -> bytes:
     image = Image.open(BytesIO(image_bytes)).convert("RGB")
+    image = strip_thumbnail_card_frame(image)
     width, height = image.size
 
     canvas = image.copy().convert("RGBA")
@@ -592,12 +640,12 @@ def compose_full_storybook_preview_image(
     theme = story_output.get("theme", "")
     story_summary = story_output.get("story_summary", "")
 
-    padding = max(int(target_width * 0.08), 20)
-    gap = max(int(target_width * 0.07), 18)
+    padding = max(int(target_width * 0.085), 22)
+    gap = max(int(target_width * 0.065), 16)
 
-    title_font_size = max(int(target_width * 0.085), 20)
-    subtitle_font_size = max(int(target_width * 0.050), 14)
-    body_font_size = max(int(target_width * 0.046), 13)
+    title_font_size = max(int(target_width * 0.092), 22)
+    subtitle_font_size = max(int(target_width * 0.046), 13)
+    body_font_size = max(int(target_width * 0.044), 12)
 
     title_font = load_storybook_font(title_font_size)
     subtitle_font = load_storybook_font(subtitle_font_size)
@@ -609,52 +657,134 @@ def compose_full_storybook_preview_image(
     max_text_width = target_width - padding * 2
 
     title_lines = wrap_story_text(draw, title, title_font, max_text_width)
-    theme_lines = wrap_story_text(draw, f"주제: {theme}", body_font, max_text_width) if theme else []
+    theme_text = f"주제: {theme}" if theme else ""
+    theme_lines = wrap_story_text(draw, theme_text, body_font, max_text_width) if theme_text else []
     summary_lines = wrap_story_text(draw, story_summary, body_font, max_text_width) if story_summary else []
 
-    subtitle_bbox = draw.textbbox((0, 0), "완성된 동화책", font=subtitle_font)
-    subtitle_height = subtitle_bbox[3] - subtitle_bbox[1]
+    title_line_height = title_font_size + max(int(title_font_size * 0.24), 5)
+    body_line_height = body_font_size + max(int(body_font_size * 0.38), 5)
 
-    title_line_height = title_font_size + max(int(title_font_size * 0.22), 5)
-    body_line_height = body_font_size + max(int(body_font_size * 0.35), 5)
-
-    cover_height = (
-        padding
-        + subtitle_height
-        + max(int(target_width * 0.09), 24)
+    cover_height = max(
+        int(target_width * 1.42),
+        padding * 2
+        + max(int(target_width * 0.16), 44)
         + len(title_lines) * title_line_height
-        + max(int(target_width * 0.08), 20)
+        + max(int(target_width * 0.12), 28)
         + len(theme_lines) * body_line_height
         + max(int(target_width * 0.05), 12)
-        + len(summary_lines) * body_line_height
-        + padding
+        + min(len(summary_lines), 3) * body_line_height
+        + max(int(target_width * 0.12), 28),
     )
 
-    cover_height = max(int(target_width * 1.35), cover_height)
-
-    cover = Image.new("RGB", (target_width, cover_height), "#fbf7ef")
+    cover = Image.new("RGB", (target_width, cover_height), "#f7f1e8")
     draw = ImageDraw.Draw(cover)
 
-    y = padding
+    # 종이 질감 느낌의 안쪽 카드
+    inner_margin = max(int(target_width * 0.055), 14)
+    card_box = (
+        inner_margin,
+        inner_margin,
+        target_width - inner_margin,
+        cover_height - inner_margin,
+    )
 
-    draw.text((padding, y), "완성된 동화책", fill="#8a7258", font=subtitle_font)
-    y += subtitle_height + max(int(target_width * 0.09), 24)
+    draw.rounded_rectangle(
+        card_box,
+        radius=max(int(target_width * 0.035), 10),
+        fill="#fbf7ef",
+        outline="#eadcc7",
+        width=max(int(target_width * 0.006), 1),
+    )
 
+    # 상단 작은 장식
+    deco_y = padding + max(int(target_width * 0.02), 6)
+    line_x1 = padding
+    line_x2 = target_width - padding
+    draw.line(
+        (line_x1, deco_y, line_x2, deco_y),
+        fill="#d6c3aa",
+        width=max(int(target_width * 0.004), 1),
+    )
+
+    dot_radius = max(int(target_width * 0.010), 3)
+    dot_x = target_width // 2
+    draw.ellipse(
+        (
+            dot_x - dot_radius,
+            deco_y - dot_radius,
+            dot_x + dot_radius,
+            deco_y + dot_radius,
+        ),
+        fill="#c7a57f",
+    )
+
+    y = padding + max(int(target_width * 0.16), 44)
+
+    # 작은 표지 라벨
+    label = "A LITTLE STORYBOOK"
+    label_bbox = draw.textbbox((0, 0), label, font=subtitle_font)
+    label_width = label_bbox[2] - label_bbox[0]
+    draw.text(
+        ((target_width - label_width) // 2, y),
+        label,
+        fill="#9a7b5f",
+        font=subtitle_font,
+    )
+    y += max(int(target_width * 0.095), 26)
+
+    # 제목 중앙 정렬
     for line in title_lines:
-        draw.text((padding, y), line, fill="#2d2926", font=title_font)
+        bbox = draw.textbbox((0, 0), line, font=title_font)
+        line_width = bbox[2] - bbox[0]
+        draw.text(
+            ((target_width - line_width) // 2, y),
+            line,
+            fill="#2d2926",
+            font=title_font,
+        )
         y += title_line_height
 
-    if theme_lines:
-        y += max(int(target_width * 0.06), 14)
-        for line in theme_lines:
-            draw.text((padding, y), line, fill="#5f554d", font=body_font)
-            y += body_line_height
+    # 제목 아래 장식선
+    y += max(int(target_width * 0.04), 10)
+    short_line = max(int(target_width * 0.32), 72)
+    draw.line(
+        (
+            (target_width - short_line) // 2,
+            y,
+            (target_width + short_line) // 2,
+            y,
+        ),
+        fill="#d8c3a8",
+        width=max(int(target_width * 0.005), 1),
+    )
+    y += max(int(target_width * 0.08), 20)
 
-    if summary_lines:
-        y += max(int(target_width * 0.04), 10)
-        for line in summary_lines:
-            draw.text((padding, y), line, fill="#5f554d", font=body_font)
-            y += body_line_height
+    # 주제와 요약은 작게, 너무 길면 3줄까지만
+    info_lines = theme_lines + summary_lines[:3]
+    for line in info_lines:
+        bbox = draw.textbbox((0, 0), line, font=body_font)
+        line_width = bbox[2] - bbox[0]
+        draw.text(
+            ((target_width - line_width) // 2, y),
+            line,
+            fill="#6f5f52",
+            font=body_font,
+        )
+        y += body_line_height
+
+    # 하단 장식
+    footer = "made with story agents"
+    footer_bbox = draw.textbbox((0, 0), footer, font=subtitle_font)
+    footer_width = footer_bbox[2] - footer_bbox[0]
+    draw.text(
+        (
+            (target_width - footer_width) // 2,
+            cover_height - padding - subtitle_font_size,
+        ),
+        footer,
+        fill="#b19a81",
+        font=subtitle_font,
+    )
 
     resized_pages: List[Image.Image] = [cover]
 
@@ -681,6 +811,7 @@ def compose_full_storybook_preview_image(
     output = BytesIO()
     canvas.save(output, format="JPEG", quality=90, optimize=True)
     return output.getvalue()
+
 
 def resize_storybook_image_to_width(image_bytes: bytes, target_width: int) -> bytes:
     image = Image.open(BytesIO(image_bytes)).convert("RGB")
