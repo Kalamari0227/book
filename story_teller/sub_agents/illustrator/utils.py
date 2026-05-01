@@ -700,3 +700,62 @@ def resize_storybook_image_to_width(image_bytes: bytes, target_width: int) -> by
     output = BytesIO()
     resized.save(output, format="JPEG", quality=90, optimize=True)
     return output.getvalue()
+
+
+def create_storybook_thumbnail_card(
+    image_bytes: bytes,
+    target_width: int = 300,
+) -> bytes:
+    image = Image.open(BytesIO(image_bytes)).convert("RGB")
+
+    inner_width = max(int(target_width * 0.88), 1)
+    width, height = image.size
+    ratio = inner_width / width
+    inner_height = max(int(height * ratio), 1)
+
+    resized = image.resize(
+        (inner_width, inner_height),
+        Image.Resampling.LANCZOS,
+    )
+
+    padding = max(int(target_width * 0.06), 14)
+    shadow_offset = max(int(target_width * 0.012), 3)
+
+    card_width = target_width
+    card_height = inner_height + padding * 2
+
+    canvas = Image.new(
+        "RGB",
+        (card_width + shadow_offset, card_height + shadow_offset),
+        "#f7f1e8",
+    )
+
+    shadow = Image.new(
+        "RGB",
+        (inner_width, inner_height),
+        "#d8c7b3",
+    )
+
+    image_x = padding
+    image_y = padding
+
+    canvas.paste(shadow, (image_x + shadow_offset, image_y + shadow_offset))
+    canvas.paste(resized, (image_x, image_y))
+
+    draw = ImageDraw.Draw(canvas)
+
+    border_color = "#fff8ec"
+    draw.rectangle(
+        (
+            image_x,
+            image_y,
+            image_x + inner_width - 1,
+            image_y + inner_height - 1,
+        ),
+        outline=border_color,
+        width=max(int(target_width * 0.006), 1),
+    )
+
+    output = BytesIO()
+    canvas.save(output, format="JPEG", quality=90, optimize=True)
+    return output.getvalue()

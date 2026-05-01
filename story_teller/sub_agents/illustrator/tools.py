@@ -13,6 +13,7 @@ from .utils import (
     build_image_prompt,
     build_storybook_html,
     build_storybook_markdown,
+    create_storybook_thumbnail_card,
     compose_full_storybook_preview_image,
     compose_storybook_page_image,
     resize_storybook_image_bytes,
@@ -225,7 +226,7 @@ async def generate_page_image(
         )
         image_bytes = base64.b64decode(image.data[0].b64_json)
 
-        display_image_bytes = resize_storybook_image_to_width(
+        display_image_bytes = create_storybook_thumbnail_card(
             image_bytes,
             target_width=300,
         )
