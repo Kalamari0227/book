@@ -306,20 +306,53 @@ def build_screen_parts_payload(
     title = story_output.get("title", "완성된 동화책")
     theme = story_output.get("theme", "")
     story_summary = story_output.get("story_summary", "")
+    main_character = story_output.get("main_character", "")
+    art_direction = story_output.get("art_direction", "")
     pages: List[Dict[str, Any]] = story_output.get("pages", [])
 
-    intro_lines = ["# 완성된 동화책", "", f"## {title}"]
-    if theme:
-        intro_lines.extend(["", f"주제: {theme}"])
-    if story_summary:
-        intro_lines.extend(["", f"줄거리: {story_summary}"])
+    cover_lines = [
+        "# 📚 완성된 동화책",
+        "",
+        f"# {title}",
+    ]
 
-    screen_parts = [{"type": "text", "text": "\n".join(intro_lines).strip()}]
+    if theme:
+        cover_lines.extend(["", f"**주제**: {theme}"])
+    if story_summary:
+        cover_lines.extend(["", f"**줄거리**: {story_summary}"])
+    if main_character:
+        cover_lines.extend(["", f"**주인공**: {main_character}"])
+    if art_direction:
+        cover_lines.extend(["", f"**그림 분위기**: {art_direction}"])
+
+    cover_lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "이제 표지부터 마지막 장까지 순서대로 보여드릴게요.",
+        ]
+    )
+
+    screen_parts = [
+        {
+            "type": "text",
+            "text": "\n".join(cover_lines).strip(),
+        }
+    ]
 
     for page in pages:
         page_number = page.get("page_number", "")
         image_artifact = page.get("image_artifact", "")
         image_data_uri = image_data_uris.get(image_artifact, "")
+
+        screen_parts.append(
+            {
+                "type": "text",
+                "text": f"## {page_number}번째 장",
+            }
+        )
+
         if image_data_uri.startswith("data:") and ";base64," in image_data_uri:
             header, data_b64 = image_data_uri.split(";base64,", 1)
             screen_parts.append(
@@ -329,17 +362,33 @@ def build_screen_parts_payload(
                     "data": data_b64,
                 }
             )
+        else:
+            screen_parts.append(
+                {
+                    "type": "text",
+                    "text": f"삽화 파일 `{image_artifact}`를 화면에 불러오지 못했어요.",
+                }
+            )
 
         if include_page_text:
             screen_parts.append(
                 {
                     "type": "text",
-                    "text": "## {page_number}번째 장\n\n{text}".format(
-                        page_number=page_number,
-                        text=page.get("text", ""),
-                    ).strip(),
+                    "text": page.get("text", "").strip(),
                 }
             )
+
+    screen_parts.append(
+        {
+            "type": "text",
+            "text": (
+                "---\n\n"
+                "🎉 동화책 전체가 완성됐어요.\n\n"
+                "원본 파일은 Artifacts에서 `storybook.html`, `storybook.md`, "
+                "`storybook_manifest.json`으로도 확인할 수 있어요."
+            ),
+        }
+    )
 
     return screen_parts
 
@@ -482,3 +531,151 @@ def build_storybook_html(
 </body>
 </html>
 """
+
+
+def compose_full_storybook_preview_image(
+    story_output: Dict[str, Any],
+    page_images: List[bytes],
+    target_width: int = 900,
+) -> bytes:
+    title = story_output.get("title", "완성된 동화책")
+    theme = story_output.get("theme", "")
+    story_summary = story_output.get("story_summary", "")
+
+    title_font = load_storybook_font(58)
+    subtitle_font = load_storybook_font(30)
+    body_font = load_storybook_font(28)
+
+    cover_height = 900
+    padding = 72
+    gap = 42
+
+    cover = Image.new("RGB", (target_width, cover_height), "#fbf7ef")
+    draw = ImageDraw.Draw(cover)
+
+    y = 140
+    draw.text((padding, y), "완성된 동화책", fill="#8a7258", font=subtitle_font)
+    y += 72
+
+    title_lines = wrap_story_text(draw, title, title_font, target_width - padding * 2)
+    for line in title_lines:
+        draw.text((padding, y), line, fill="#2d2926", font=title_font)
+        bbox = draw.textbbox((padding, y), line, font=title_font)
+        y = bbox[3] + 20
+
+    if theme:
+        y += 40
+        draw.text((padding, y), f"주제: {theme}", fill="#5f554d", font=body_font)
+        y += 48
+
+    if story_summary:
+        y += 20
+        summary_lines = wrap_story_text(
+            draw,
+            story_summary,
+            body_font,
+            target_width - padding * 2,
+        )
+        for line in summary_lines:
+            draw.text((padding, y), line, fill="#5f554d", font=body_font)
+            bbox = draw.textbbox((padding, y), line, font=body_font)
+            y = bbox[3] + 14
+
+    resized_pages: List[Image.Image] = [cover]
+
+    for image_bytes in page_images:
+        page_image = Image.open(BytesIO(image_bytes)).convert("RGB")
+        width, height = page_image.size
+        ratio = target_width / width
+        resized_height = max(int(height * ratio), 1)
+        page_image = page_image.resize(
+            (target_width, resized_height),
+            Image.Resampling.LANCZOS,
+        )
+        resized_pages.append(page_image)
+
+    total_height = sum(image.height for image in resized_pages) + gap * (len(resized_pages) - 1)
+    canvas = Image.new("RGB", (target_width, total_height), "#f7f1e8")
+
+    y = 0
+    for image in resized_pages:
+        canvas.paste(image, (0, y))
+        y += image.height + gap
+
+    output = BytesIO()
+    canvas.save(output, format="JPEG", quality=90, optimize=True)
+    return output.getvalue()
+
+
+def compose_full_storybook_preview_image(
+    story_output: Dict[str, Any],
+    page_images: List[bytes],
+    target_width: int = 900,
+) -> bytes:
+    title = story_output.get("title", "완성된 동화책")
+    theme = story_output.get("theme", "")
+    story_summary = story_output.get("story_summary", "")
+
+    title_font = load_storybook_font(58)
+    subtitle_font = load_storybook_font(30)
+    body_font = load_storybook_font(28)
+
+    cover_height = 900
+    padding = 72
+    gap = 42
+
+    cover = Image.new("RGB", (target_width, cover_height), "#fbf7ef")
+    draw = ImageDraw.Draw(cover)
+
+    y = 140
+    draw.text((padding, y), "완성된 동화책", fill="#8a7258", font=subtitle_font)
+    y += 72
+
+    title_lines = wrap_story_text(draw, title, title_font, target_width - padding * 2)
+    for line in title_lines:
+        draw.text((padding, y), line, fill="#2d2926", font=title_font)
+        bbox = draw.textbbox((padding, y), line, font=title_font)
+        y = bbox[3] + 20
+
+    if theme:
+        y += 40
+        draw.text((padding, y), f"주제: {theme}", fill="#5f554d", font=body_font)
+        y += 48
+
+    if story_summary:
+        y += 20
+        summary_lines = wrap_story_text(
+            draw,
+            story_summary,
+            body_font,
+            target_width - padding * 2,
+        )
+        for line in summary_lines:
+            draw.text((padding, y), line, fill="#5f554d", font=body_font)
+            bbox = draw.textbbox((padding, y), line, font=body_font)
+            y = bbox[3] + 14
+
+    resized_pages: List[Image.Image] = [cover]
+
+    for image_bytes in page_images:
+        page_image = Image.open(BytesIO(image_bytes)).convert("RGB")
+        width, height = page_image.size
+        ratio = target_width / width
+        resized_height = max(int(height * ratio), 1)
+        page_image = page_image.resize(
+            (target_width, resized_height),
+            Image.Resampling.LANCZOS,
+        )
+        resized_pages.append(page_image)
+
+    total_height = sum(image.height for image in resized_pages) + gap * (len(resized_pages) - 1)
+    canvas = Image.new("RGB", (target_width, total_height), "#f7f1e8")
+
+    y = 0
+    for image in resized_pages:
+        canvas.paste(image, (0, y))
+        y += image.height + gap
+
+    output = BytesIO()
+    canvas.save(output, format="JPEG", quality=90, optimize=True)
+    return output.getvalue()

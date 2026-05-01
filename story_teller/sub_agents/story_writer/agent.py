@@ -1,39 +1,25 @@
-from typing import List
-
 from google.adk.agents import Agent
-from pydantic import BaseModel, Field
 
 from ...callbacks import before_agent_callback, after_agent_callback
 from ...env import force_load_project_env
-from .prompt import STORY_WRITER_DESCRIPTION, STORY_WRITER_PROMPT
+from .tools import write_storybook_plan
 
 
 force_load_project_env()
 
 
-class StoryPage(BaseModel):
-    page_number: int = Field(description="Page number from 1 to 5")
-    text: str = Field(description="Child-friendly story text for this page")
-    visual: str = Field(description="Detailed visual description for illustration")
-
-
-class StoryWriterOutput(BaseModel):
-    theme: str = Field(description="The story theme provided by the user")
-    title: str = Field(description="Short children's storybook title")
-    pages: List[StoryPage] = Field(
-        description="Exactly five story pages with text and visual descriptions",
-        min_length=5,
-        max_length=5,
-    )
-
-
 story_writer_agent = Agent(
     name="StoryWriterAgent",
-    description=STORY_WRITER_DESCRIPTION,
-    instruction=STORY_WRITER_PROMPT,
+    description="Creates a structured five-page storybook plan and stores it in state.",
+    instruction=(
+        "You are the StoryWriterAgent.\n"
+        "Call the write_storybook_plan tool exactly once using the user's theme.\n"
+        "The tool stores story_writer_output in state for the next agents.\n"
+        "Do not print JSON.\n"
+        "After the tool call, say only: 동화 기획 데이터가 준비됐어요."
+    ),
     model="openai/gpt-4o",
-    output_schema=StoryWriterOutput,
-    output_key="story_writer_output",
+    tools=[write_storybook_plan],
     before_agent_callback=before_agent_callback,
     after_agent_callback=after_agent_callback,
 )

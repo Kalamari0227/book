@@ -1,0 +1,24 @@
+from google.adk.agents import SequentialAgent
+
+from .callbacks import show_progress_after_agent, show_progress_before_agent
+from .sub_agents.illustrator.agent import (
+    parallel_illustrator_agent,
+    storybook_assembler_agent,
+)
+from .sub_agents.story_writer.agent import story_writer_agent
+
+
+root_agent = SequentialAgent(
+    name="StoryBookCreator",
+    description=(
+        "Creates a five-page children's storybook from a theme, then generates "
+        "one image artifact per page using the story data stored in agent state."
+    ),
+    sub_agents=[
+        story_writer_agent,
+        parallel_illustrator_agent,
+        storybook_assembler_agent,
+    ],
+    before_agent_callback=show_progress_before_agent,
+    after_agent_callback=show_progress_after_agent,
+)

@@ -40,9 +40,7 @@ book_assembler_agent = Agent(
         "You are a storybook editor.\n"
         "Use story_writer_output and generated image artifacts to assemble the final storybook.\n"
         "You must call the assemble_storybook tool.\n"
-        "After the tool returns, briefly say that storybook.html, storybook.md, "
-        "and storybook_manifest.json were saved. The after-agent callback will display "
-        "the finished storybook preview on screen."
+        "After the tool returns, say only: 동화책 조립이 완료됐어요."
     ),
     model="openai/gpt-4o",
     tools=[assemble_storybook],

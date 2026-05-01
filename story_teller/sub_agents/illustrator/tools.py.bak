@@ -1,0 +1,500 @@
+import base64
+import json
+import os
+from typing import Any, Dict, List, Literal, cast
+
+from google.adk.tools.tool_context import ToolContext
+from google.genai import types
+
+from .utils import (
+    build_artifact_filename,
+    build_image_prompt,
+    build_progress_markdown,
+    build_progress_payload,
+    build_storybook_html,
+    build_storybook_markdown,
+    story_output_to_dict,
+)
+
+
+ImageQuality = Literal["standard", "hd", "low", "medium", "high", "auto"]
+ImageSize = Literal[
+    "auto",
+    "1024x1024",
+    "1536x1024",
+    "1024x1536",
+    "256x256",
+    "512x512",
+    "1792x1024",
+    "1024x1792",
+]
+
+IMAGE_MODEL = os.getenv("STORYBOOK_IMAGE_MODEL", "gpt-image-1.5")
+IMAGE_QUALITY = cast(ImageQuality, os.getenv("STORYBOOK_IMAGE_QUALITY", "high"))
+IMAGE_SIZE = cast(ImageSize, os.getenv("STORYBOOK_IMAGE_SIZE", "1024x1536"))
+PROGRESS_JSON_ARTIFACT = "generation_progress.json"
+PROGRESS_MARKDOWN_ARTIFACT = "generation_progress.md"
+STORYBOOK_HTML_ARTIFACT = "storybook.html"
+STORYBOOK_MARKDOWN_ARTIFACT = "storybook.md"
+STORYBOOK_MANIFEST_ARTIFACT = "storybook_manifest.json"
+
+
+async def save_text_artifact(
+    tool_context: ToolContext,
+    filename: str,
+    content: str,
+    mime_type: str,
+) -> None:
+    artifact = types.Part(
+        inline_data=types.Blob(
+            mime_type=mime_type,
+            data=content.encode("utf-8"),
+        )
+    )
+    await tool_context.save_artifact(filename=filename, artifact=artifact)
+
+
+async def save_progress_artifacts(
+    tool_context: ToolContext,
+    current_step: str,
+    pages: List[Dict[str, Any]],
+    generated_images: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    progress = build_progress_payload(current_step, pages, generated_images)
+    await save_text_artifact(
+        tool_context=tool_context,
+        filename=PROGRESS_JSON_ARTIFACT,
+        content=json.dumps(progress, ensure_ascii=False, indent=2),
+        mime_type="application/json",
+    )
+    await save_text_artifact(
+        tool_context=tool_context,
+        filename=PROGRESS_MARKDOWN_ARTIFACT,
+        content=build_progress_markdown(progress),
+        mime_type="text/markdown",
+    )
+    tool_context.state["generation_progress"] = progress
+    return progress
+
+
+async def load_image_data_uris(
+    tool_context: ToolContext,
+    pages: List[Dict[str, Any]],
+) -> Dict[str, str]:
+    image_data_uris = {}
+
+    for page in pages:
+        filename = page.get("image_artifact")
+        if not filename:
+            continue
+
+        image_artifact = await tool_context.load_artifact(filename=filename)
+        if not image_artifact or not image_artifact.inline_data:
+            continue
+
+        mime_type = image_artifact.inline_data.mime_type or "image/jpeg"
+        image_b64 = base64.b64encode(image_artifact.inline_data.data).decode("ascii")
+        image_data_uris[filename] = f"data:{mime_type};base64,{image_b64}"
+
+    return image_data_uris
+
+
+async def save_storybook_artifacts(
+    tool_context: ToolContext,
+    story_output: Dict[str, Any],
+    generated_images: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    pages: List[Dict[str, Any]] = story_output.get("pages", [])
+    story_output["pages"] = pages
+    story_output["image_artifacts"] = generated_images
+
+    storybook_markdown = build_storybook_markdown(story_output)
+    image_data_uris = await load_image_data_uris(tool_context, pages)
+    storybook_html = build_storybook_html(story_output, image_data_uris)
+    storybook_manifest = {
+        "title": story_output.get("title"),
+        "theme": story_output.get("theme"),
+        "main_character": story_output.get("main_character"),
+        "art_direction": story_output.get("art_direction"),
+        "story_summary": story_output.get("story_summary"),
+        "pages": pages,
+        "image_artifacts": generated_images,
+        "storybook_artifact": STORYBOOK_MARKDOWN_ARTIFACT,
+        "storybook_html_artifact": STORYBOOK_HTML_ARTIFACT,
+        "manifest_artifact": STORYBOOK_MANIFEST_ARTIFACT,
+        "progress_artifact": PROGRESS_MARKDOWN_ARTIFACT,
+        "progress_json_artifact": PROGRESS_JSON_ARTIFACT,
+    }
+
+    await save_text_artifact(
+        tool_context=tool_context,
+        filename=STORYBOOK_MARKDOWN_ARTIFACT,
+        content=storybook_markdown,
+        mime_type="text/markdown",
+    )
+    await save_text_artifact(
+        tool_context=tool_context,
+        filename=STORYBOOK_HTML_ARTIFACT,
+        content=storybook_html,
+        mime_type="text/html",
+    )
+    await save_text_artifact(
+        tool_context=tool_context,
+        filename=STORYBOOK_MANIFEST_ARTIFACT,
+        content=json.dumps(storybook_manifest, ensure_ascii=False, indent=2),
+        mime_type="application/json",
+    )
+
+    story_output["storybook_artifact"] = STORYBOOK_MARKDOWN_ARTIFACT
+    story_output["storybook_html_artifact"] = STORYBOOK_HTML_ARTIFACT
+    story_output["manifest_artifact"] = STORYBOOK_MANIFEST_ARTIFACT
+    story_output["progress_artifact"] = PROGRESS_MARKDOWN_ARTIFACT
+    tool_context.state["story_writer_output"] = story_output
+
+    return storybook_manifest
+
+
+def get_generated_images_from_pages(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    generated_images = []
+    for page in pages:
+        image_artifact = page.get("image_artifact")
+        if not image_artifact:
+            continue
+        generated_images.append(
+            {
+                "page_number": page.get("page_number"),
+                "filename": image_artifact,
+                "visual": page.get("visual", ""),
+                "prompt_artifact": page.get("prompt_artifact", ""),
+            }
+        )
+    return generated_images
+
+
+def get_parallel_image_results(tool_context: ToolContext) -> List[Dict[str, Any]]:
+    generated_images = []
+    for page_number in range(1, 6):
+        result = tool_context.state.get(f"page_image_result_{page_number}")
+        if isinstance(result, dict) and result.get("filename"):
+            generated_images.append(result)
+    return generated_images
+
+
+def apply_parallel_image_results(
+    story_output: Dict[str, Any],
+    generated_images: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    pages: List[Dict[str, Any]] = story_output.get("pages", [])
+    images_by_page = {
+        int(image.get("page_number")): image
+        for image in generated_images
+        if image.get("page_number") is not None
+    }
+
+    for page in pages:
+        page_number = int(page.get("page_number", 0))
+        image = images_by_page.get(page_number)
+        if not image:
+            continue
+        page["image_artifact"] = image.get("filename")
+        page["prompt_artifact"] = image.get(
+            "prompt_artifact",
+            page.get("prompt_artifact") or f"storybook_page_{page_number}_prompt.md",
+        )
+
+    story_output["pages"] = pages
+    return story_output
+
+
+async def prepare_storybook_generation(tool_context: ToolContext) -> Dict[str, Any]:
+    """Prepare story state and save the initial partial storybook artifacts."""
+    story_output = story_output_to_dict(tool_context.state.get("story_writer_output"))
+    pages: List[Dict[str, Any]] = story_output.get("pages", [])
+    title = story_output.get("title", "Children's Storybook")
+    main_character = story_output.get("main_character", "")
+    art_direction = story_output.get("art_direction", "")
+
+    if len(pages) != 5:
+        return {
+            "status": "error",
+            "message": "story_writer_output must contain exactly 5 pages before illustrating.",
+        }
+
+    for page in pages:
+        page_number = int(page.get("page_number", 1))
+        page["main_character"] = main_character
+        page["art_direction"] = art_direction
+        prompt = build_image_prompt(title, page)
+        prompt_filename = f"storybook_page_{page_number}_prompt.md"
+        page["prompt_artifact"] = prompt_filename
+
+        await save_text_artifact(
+            tool_context=tool_context,
+            filename=prompt_filename,
+            content=f"# Page {page_number} Image Prompt\n\n{prompt}\n",
+            mime_type="text/markdown",
+        )
+
+    generated_images = get_generated_images_from_pages(pages)
+    story_output["pages"] = pages
+    tool_context.state["story_writer_output"] = story_output
+    tool_context.state["next_storybook_page"] = len(generated_images) + 1
+
+    await save_progress_artifacts(
+        tool_context=tool_context,
+        current_step=f"Ready to generate page {len(generated_images) + 1}",
+        pages=pages,
+        generated_images=generated_images,
+    )
+    await save_storybook_artifacts(tool_context, story_output, generated_images)
+
+    return {
+        "status": "ready",
+        "next_page": len(generated_images) + 1,
+        "total_pages": len(pages),
+        "storybook_html_artifact": STORYBOOK_HTML_ARTIFACT,
+        "progress_artifact": PROGRESS_MARKDOWN_ARTIFACT,
+    }
+
+
+async def generate_next_storybook_page(tool_context: ToolContext) -> Dict[str, Any]:
+    """Generate exactly one page image, then update storybook.html immediately."""
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI()
+    story_output = story_output_to_dict(tool_context.state.get("story_writer_output"))
+    pages: List[Dict[str, Any]] = story_output.get("pages", [])
+
+    if len(pages) != 5:
+        return {
+            "status": "error",
+            "message": "Run prepare_storybook_generation after StoryWriterAgent creates exactly 5 pages.",
+        }
+
+    generated_images = get_generated_images_from_pages(pages)
+    next_page = next((page for page in pages if not page.get("image_artifact")), None)
+    if next_page is None:
+        await save_storybook_artifacts(tool_context, story_output, generated_images)
+        await save_progress_artifacts(
+            tool_context=tool_context,
+            current_step="All pages already complete",
+            pages=pages,
+            generated_images=generated_images,
+        )
+        return {
+            "status": "complete",
+            "message": "All pages already have image artifacts.",
+            "storybook_html_artifact": STORYBOOK_HTML_ARTIFACT,
+        }
+
+    page_number = int(next_page.get("page_number", len(generated_images) + 1))
+    filename = build_artifact_filename(page_number)
+    prompt_filename = next_page.get("prompt_artifact") or f"storybook_page_{page_number}_prompt.md"
+    next_page["prompt_artifact"] = prompt_filename
+    prompt = build_image_prompt(story_output.get("title", "Children's Storybook"), next_page)
+
+    await save_text_artifact(
+        tool_context=tool_context,
+        filename=prompt_filename,
+        content=f"# Page {page_number} Image Prompt\n\n{prompt}\n",
+        mime_type="text/markdown",
+    )
+    await save_progress_artifacts(
+        tool_context=tool_context,
+        current_step=f"Generating image for page {page_number}",
+        pages=pages,
+        generated_images=generated_images,
+    )
+
+    existing_artifacts = await tool_context.list_artifacts()
+    if filename not in existing_artifacts:
+        image = await client.images.generate(
+            model=IMAGE_MODEL,
+            prompt=prompt,
+            n=1,
+            quality=IMAGE_QUALITY,
+            moderation="low",
+            output_format="jpeg",
+            background="opaque",
+            size=IMAGE_SIZE,
+        )
+
+        image_bytes = base64.b64decode(image.data[0].b64_json)
+        artifact = types.Part(
+            inline_data=types.Blob(
+                mime_type="image/jpeg",
+                data=image_bytes,
+            )
+        )
+        await tool_context.save_artifact(filename=filename, artifact=artifact)
+
+    next_page["image_artifact"] = filename
+    generated_images = get_generated_images_from_pages(pages)
+    story_output["pages"] = pages
+    await save_storybook_artifacts(tool_context, story_output, generated_images)
+    await save_progress_artifacts(
+        tool_context=tool_context,
+        current_step=f"Completed page {page_number}; storybook.html updated",
+        pages=pages,
+        generated_images=generated_images,
+    )
+
+    next_page_number = len(generated_images) + 1
+    tool_context.state["next_storybook_page"] = next_page_number
+    is_complete = len(generated_images) == len(pages)
+    return {
+        "status": "complete" if is_complete else "page_complete",
+        "completed_page": page_number,
+        "next_page": None if is_complete else next_page_number,
+        "image_artifact": filename,
+        "prompt_artifact": prompt_filename,
+        "storybook_html_artifact": STORYBOOK_HTML_ARTIFACT,
+        "progress_artifact": PROGRESS_MARKDOWN_ARTIFACT,
+    }
+
+
+async def generate_storybook_page(
+    page_number: int,
+    tool_context: ToolContext,
+) -> Dict[str, Any]:
+    """Generate one fixed page image for use inside ParallelAgent branches."""
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI()
+    story_output = story_output_to_dict(tool_context.state.get("story_writer_output"))
+    pages: List[Dict[str, Any]] = story_output.get("pages", [])
+
+    if len(pages) != 5:
+        return {
+            "status": "error",
+            "message": "StoryWriterAgent must create exactly 5 pages before illustration.",
+        }
+    if page_number < 1 or page_number > 5:
+        return {
+            "status": "error",
+            "message": "page_number must be between 1 and 5.",
+        }
+
+    page = next(
+        (item for item in pages if int(item.get("page_number", 0)) == page_number),
+        pages[page_number - 1],
+    )
+    page["main_character"] = story_output.get("main_character", "")
+    page["art_direction"] = story_output.get("art_direction", "")
+
+    filename = build_artifact_filename(page_number)
+    prompt_filename = page.get("prompt_artifact") or f"storybook_page_{page_number}_prompt.md"
+    prompt = build_image_prompt(story_output.get("title", "Children's Storybook"), page)
+
+    await save_text_artifact(
+        tool_context=tool_context,
+        filename=prompt_filename,
+        content=f"# Page {page_number} Image Prompt\n\n{prompt}\n",
+        mime_type="text/markdown",
+    )
+
+    current_results = get_parallel_image_results(tool_context)
+    await save_progress_artifacts(
+        tool_context=tool_context,
+        current_step=f"이미지 {page_number}/5 생성 중...",
+        pages=pages,
+        generated_images=current_results,
+    )
+
+    existing_artifacts = await tool_context.list_artifacts()
+    if filename not in existing_artifacts:
+        image = await client.images.generate(
+            model=IMAGE_MODEL,
+            prompt=prompt,
+            n=1,
+            quality=IMAGE_QUALITY,
+            moderation="low",
+            output_format="jpeg",
+            background="opaque",
+            size=IMAGE_SIZE,
+        )
+
+        image_bytes = base64.b64decode(image.data[0].b64_json)
+        artifact = types.Part(
+            inline_data=types.Blob(
+                mime_type="image/jpeg",
+                data=image_bytes,
+            )
+        )
+        await tool_context.save_artifact(filename=filename, artifact=artifact)
+
+    result = {
+        "page_number": page_number,
+        "filename": filename,
+        "visual": page.get("visual", ""),
+        "prompt_artifact": prompt_filename,
+    }
+    tool_context.state[f"page_image_result_{page_number}"] = result
+
+    await save_progress_artifacts(
+        tool_context=tool_context,
+        current_step=f"이미지 {page_number}/5 생성 완료",
+        pages=pages,
+        generated_images=[*current_results, result],
+    )
+
+    return {
+        "status": "page_complete",
+        "completed_page": page_number,
+        "image_artifact": filename,
+        "prompt_artifact": prompt_filename,
+    }
+
+
+async def assemble_storybook(tool_context: ToolContext) -> Dict[str, Any]:
+    """Finalize storybook artifacts after all page images are available."""
+    story_output = story_output_to_dict(tool_context.state.get("story_writer_output"))
+    generated_images = get_parallel_image_results(tool_context)
+    if generated_images:
+        story_output = apply_parallel_image_results(story_output, generated_images)
+
+    pages: List[Dict[str, Any]] = story_output.get("pages", [])
+    generated_images = get_generated_images_from_pages(pages)
+
+    await save_progress_artifacts(
+        tool_context=tool_context,
+        current_step="Assembling final storybook artifacts",
+        pages=pages,
+        generated_images=generated_images,
+    )
+    await save_storybook_artifacts(tool_context, story_output, generated_images)
+    tool_context.state["illustrator_output"] = {
+        "status": "complete" if len(generated_images) == len(pages) else "partial",
+        "total_images": len(generated_images),
+        "generated_images": generated_images,
+        "storybook_artifact": STORYBOOK_MARKDOWN_ARTIFACT,
+        "storybook_html_artifact": STORYBOOK_HTML_ARTIFACT,
+        "manifest_artifact": STORYBOOK_MANIFEST_ARTIFACT,
+        "progress_artifact": PROGRESS_MARKDOWN_ARTIFACT,
+        "progress_json_artifact": PROGRESS_JSON_ARTIFACT,
+    }
+
+    await save_progress_artifacts(
+        tool_context=tool_context,
+        current_step="Complete",
+        pages=pages,
+        generated_images=generated_images,
+    )
+
+    return tool_context.state["illustrator_output"]
+
+
+async def generate_storybook_images(tool_context: ToolContext) -> Dict[str, Any]:
+    """Backward-compatible all-at-once generator."""
+    prepare_result = await prepare_storybook_generation(tool_context)
+    if prepare_result.get("status") == "error":
+        return prepare_result
+
+    while True:
+        page_result = await generate_next_storybook_page(tool_context)
+        if page_result.get("status") == "complete":
+            break
+        if page_result.get("status") == "error":
+            return page_result
+
+    return await assemble_storybook(tool_context)

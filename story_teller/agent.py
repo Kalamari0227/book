@@ -2,6 +2,14 @@ from google.adk.agents import ParallelAgent, SequentialAgent
 
 from .callbacks import before_agent_callback, after_agent_callback
 from .env import force_load_project_env
+from .progress_agents import (
+    book_done_message_agent,
+    book_start_message_agent,
+    illustration_done_message_agent,
+    illustration_start_message_agent,
+    story_done_message_agent,
+    story_start_message_agent,
+)
 
 
 force_load_project_env()
@@ -40,8 +48,14 @@ root_agent = SequentialAgent(
         "then assembles the final storybook artifacts."
     ),
     sub_agents=[
+        story_start_message_agent,
         story_writer_agent,
+        story_done_message_agent,
+        illustration_start_message_agent,
         parallel_illustrator_agent,
+        illustration_done_message_agent,
+        book_start_message_agent,
         book_assembler_agent,
+        book_done_message_agent,
     ],
 )
