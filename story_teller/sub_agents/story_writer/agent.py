@@ -1,10 +1,14 @@
 from typing import List
 
 from google.adk.agents import Agent
-from google.adk.models.lite_llm import LiteLlm
 from pydantic import BaseModel, Field
 
+from ...callbacks import before_agent_callback, after_agent_callback
+from ...env import force_load_project_env
 from .prompt import STORY_WRITER_DESCRIPTION, STORY_WRITER_PROMPT
+
+
+force_load_project_env()
 
 
 class StoryPage(BaseModel):
@@ -23,13 +27,13 @@ class StoryWriterOutput(BaseModel):
     )
 
 
-MODEL = LiteLlm(model="openai/gpt-4o")
-
 story_writer_agent = Agent(
     name="StoryWriterAgent",
     description=STORY_WRITER_DESCRIPTION,
     instruction=STORY_WRITER_PROMPT,
-    model=MODEL,
+    model="openai/gpt-4o",
     output_schema=StoryWriterOutput,
     output_key="story_writer_output",
+    before_agent_callback=before_agent_callback,
+    after_agent_callback=after_agent_callback,
 )
